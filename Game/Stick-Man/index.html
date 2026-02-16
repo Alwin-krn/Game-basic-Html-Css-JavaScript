@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Modern Stickman Shooter</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&display=swap" rel="stylesheet">
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #222; font-family: 'Fredoka One', cursive; }
+        canvas { display: block; }
+        
+        /* UI Layer */
+        #ui-layer {
+            position: absolute; top: 20px; left: 20px;
+            display: flex; gap: 20px;
+            pointer-events: none;
+        }
+        .hud-box {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(5px);
+            padding: 10px 20px;
+            border-radius: 15px;
+            color: white;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            font-size: 18px;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .icon { font-size: 24px; }
+
+        /* Game Over Screen */
+        #game-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(17, 17, 17, 0.9);
+            display: none; flex-direction: column;
+            justify-content: center; align-items: center; color: white;
+            z-index: 100;
+        }
+        h1 { font-size: 60px; margin: 0; text-transform: uppercase; letter-spacing: 5px; color: #ff4757; }
+        p { font-size: 24px; color: #ccc; margin-bottom: 30px; }
+        
+        button {
+            padding: 15px 40px; font-size: 24px; font-family: inherit;
+            background: linear-gradient(45deg, #ff4757, #ff6b81);
+            color: white; border: none; border-radius: 50px;
+            cursor: pointer; box-shadow: 0 10px 20px rgba(255, 71, 87, 0.4);
+            transition: transform 0.2s;
+        }
+        button:hover { transform: scale(1.1); }
+
+        /* Instruksi */
+        #tutorial {
+            position: absolute; bottom: 30px; width: 100%; text-align: center;
+            color: rgba(255,255,255,0.7); font-size: 14px; letter-spacing: 1px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="hud-box">
+        <span class="icon">⭐</span> <span id="scoreVal">0</span>
+    </div>
+    <div class="hud-box">
+        <span class="icon">🔫</span> <span id="ammoVal">∞</span>
+    </div>
+</div>
+
+<div id="tutorial">
+    [WASD / PANAH] Bergerak  •  [F] Tembak  •  [SPASI] Lompat
+</div>
+
+<div id="game-screen">
+    <h1 id="screen-title">GAME OVER</h1>
+    <p>Skor Akhir: <span id="finalScore">0</span></p>
+    <button onclick="resetGame()">MAIN LAGI</button>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const uiScreen = document.getElementById('game-screen');
+const scoreEl = document.getElementById('scoreVal');
+const finalScoreEl = document.getElementById('finalScore');
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+// --- SETTING FISIKA (MODERN & SMOOTH) ---
+const GRAVITY = 0.6;
+const FRICTION = 0.85;  // Semakin kecil (0.1 - 0.9), semakin cepat berhenti (licin vs kesat)
+const ACCEL = 0.8;      // Percepatan saat tombol ditekan
+const MAX_SPEED = 7;    // Kecepatan maksimum (dikurangi biar tidak terlalu ngebut)
+const JUMP_FORCE = -14;
+
+let score = 0;
+let gameState = "PLAYING";
+let cameraX = 0;
+let frameCount = 0;
+
+// --- ASSETS ---
+// Membuat background gradient sekali saja untuk performa
+let skyGradient;
+function createGradient() {
+    skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    skyGradient.addColorStop(0, "#2c3e50"); // Biru Gelap
+    skyGradient.addColorStop(1, "#4ca1af"); // Cyan Pudar
+}
+createGradient();
+
+// --- INPUT HANDLER ---
+const keys = { right: false, left: false, up: false, shoot: false };
+window.addEventListener('keydown', e => {
+    if(e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
+    if(e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
+    if(e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'Space') keys.up = true;
+    if(e.code === 'KeyF') shoot();
+});
+window.addEventListener('keyup', e => {
+    if(e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = false;
+    if(e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = false;
+    if(e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'Space') keys.up = false;
+});
+
+// --- ENTITIES ---
+const player = {
+    x: 100, y: 100, w: 24, h: 48,
+    vx: 0, vy: 0,
+    grounded: false, facingRight: true,
+    color: "#ecf0f1"
+};
+
+let platforms = [];
+let bullets = [];
+let particles = [];
+let enemies = [];
+
+function initLevel() {
+    platforms = [
+        {x: -200, y: 500, w: 2000, h: 100, type: 'ground'}, // Tanah Utama
+        {x: 400, y: 350, w: 120, h: 30, type: 'float'},
+        {x: 700, y: 250, w: 120, h: 30, type: 'float'},
+        {x: 600, y: 450, w: 60, h: 60, type: 'crate'}, // Kotak hancur
+        {x: 660, y: 450, w: 60, h: 60, type: 'crate'},
+        {x: 630, y: 390, w: 60, h: 60, type: 'crate'},
+        
+        {x: 1100, y: 500, w: 1500, h: 100, type: 'ground'},
+        {x: 1300, y: 350, w: 60, h: 60, type: 'crate'},
+        {x: 1300, y: 290, w: 60, h: 60, type: 'crate'},
+        
+        {x: 2000, y: 400, w: 200, h: 30, type: 'float'},
+    ];
+
+    enemies = [
+        {x: 900, y: 460, w: 40, h: 40, speed: 2, dir: -1, hp: 1},
+        {x: 1600, y: 460, w: 40, h: 40, speed: 3, dir: 1, hp: 1},
+        {x: 2100, y: 360, w: 40, h: 40, speed: 4, dir: 1, hp: 1}
+    ];
+
+    player.x = 100; player.y = 300; player.vx = 0; player.vy = 0;
+    bullets = [];
+    particles = [];
+    cameraX = 0;
+    score = 0;
+    scoreEl.innerText = score;
+    gameState = "PLAYING";
+    uiScreen.style.display = "none";
+}
+
+function shoot() {
+    if (gameState !== "PLAYING") return;
+    bullets.push({
+        x: player.x + player.w/2,
+        y: player.y + player.h/3,
+        vx: player.facingRight ? 15 : -15, // Peluru cepat
+        life: 60
+    });
+    
+    // Efek recoil kecil
+    player.vx += player.facingRight ? -2 : 2;
+}
+
+function createExplosion(x, y, color, count) {
+    for(let i=0; i<count; i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random() - 0.5) * 10,
+            vy: (Math.random() - 0.5) * 10,
+            life: 30 + Math.random() * 20,
+            color: color,
+            size: Math.random() * 5 + 2
+        });
+    }
+}
+
+// --- UPDATE LOOP ---
+function update() {
+    if (gameState !== "PLAYING") return;
+    frameCount++;
+
+    // 1. Player Physics (Smooth Movement)
+    if (keys.right) {
+        if (player.vx < MAX_SPEED) player.vx += ACCEL;
+        player.facingRight = true;
+    }
+    if (keys.left) {
+        if (player.vx > -MAX_SPEED) player.vx -= ACCEL;
+        player.facingRight = false;
+    }
+
+    // Friction & Gravity
+    player.vx *= FRICTION;
+    player.vy += GRAVITY;
+
+    // Jump
+    if (keys.up && player.grounded) {
+        player.vy = JUMP_FORCE;
+        player.grounded = false;
+        // Efek partikel debu saat lompat
+        createExplosion(player.x + player.w/2, player.y + player.h, "#fff", 5);
+    }
+
+    // 2. Collision System
+    player.grounded = false;
+    
+    // Horizontal
+    player.x += player.vx;
+    platforms.forEach(p => {
+        if (rectIntersect(player.x, player.y, player.w, player.h, p.x, p.y, p.w, p.h)) {
+            if (player.vx > 0) player.x = p.x - player.w;
+            else if (player.vx < 0) player.x = p.x + p.w;
+            player.vx = 0;
+        }
+    });
+
+    // Vertical
+    player.y += player.vy;
+    platforms.forEach(p => {
+        if (rectIntersect(player.x, player.y, player.w, player.h, p.x, p.y, p.w, p.h)) {
+            if (player.vy > 0) {
+                player.y = p.y - player.h;
+                player.vy = 0;
+                player.grounded = true;
+            } else if (player.vy < 0) {
+                player.y = p.y + p.h;
+                player.vy = 0;
+            }
+        }
+    });
+
+    // 3. Bullets Logic
+    bullets.forEach((b, idx) => {
+        b.x += b.vx;
+        b.life--;
+        if (b.life <= 0) bullets.splice(idx, 1);
+
+        // Kena Platform
+        for (let i = platforms.length - 1; i >= 0; i--) {
+            let p = platforms[i];
+            if (rectIntersect(b.x-5, b.y-5, 10, 10, p.x, p.y, p.w, p.h)) {
+                bullets.splice(idx, 1);
+                
+                if (p.type === 'crate') {
+                    createExplosion(p.x + p.w/2, p.y + p.h/2, "#f1c40f", 10); // Ledakan kuning
+                    platforms.splice(i, 1); // Hancurkan crate
+                    score += 10;
+                } else {
+                    createExplosion(b.x, b.y, "#fff", 3); // Percikan kecil
+                }
+                scoreEl.innerText = score;
+                return;
+            }
+        }
+
+        // Kena Musuh
+        enemies.forEach((e, eIdx) => {
+            if (rectIntersect(b.x-5, b.y-5, 10, 10, e.x, e.y, e.w, e.h)) {
+                bullets.splice(idx, 1);
+                enemies.splice(eIdx, 1);
+                createExplosion(e.x + e.w/2, e.y + e.h/2, "#ff4757", 15); // Darah merah
+                score += 50;
+                scoreEl.innerText = score;
+            }
+        });
+    });
+
+    // 4. Enemy Logic
+    enemies.forEach(e => {
+        e.x += e.speed * e.dir;
+        // Patroli sederhana
+        if (frameCount % 100 === 0) e.dir *= -1; // Balik arah tiap beberapa detik acak
+        
+        // Tabrak Player
+        if (rectIntersect(player.x, player.y, player.w, player.h, e.x, e.y, e.w, e.h)) {
+            gameOver();
+        }
+    });
+
+    // 5. Particles Logic
+    particles.forEach((p, idx) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.2; // Gravity partikel
+        p.life--;
+        if (p.life <= 0) particles.splice(idx, 1);
+    });
+
+    // 6. Camera Follow (Lerp / Smooth)
+    // Kamera mengejar target (player) dengan faktor 0.1 (10% jarak per frame)
+    let targetCamX = player.x - canvas.width * 0.3;
+    cameraX += (targetCamX - cameraX) * 0.1;
+
+    // Death Fall
+    if (player.y > canvas.height + 100) gameOver();
+}
+
+function rectIntersect(x1, y1, w1, h1, x2, y2, w2, h2) {
+    return x2 < x1 + w1 && x2 + w2 > x1 && y2 < y1 + h1 && y2 + h2 > y1;
+}
+
+function gameOver() {
+    gameState = "GAMEOVER";
+    finalScoreEl.innerText = score;
+    uiScreen.style.display = "flex";
+}
+
+function resetGame() {
+    initLevel();
+    update();
+}
+
+// --- DRAWING ---
+function draw() {
+    ctx.fillStyle = skyGradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    ctx.translate(-cameraX, 0);
+
+    // Draw Platforms (Modern Style)
+    platforms.forEach(p => {
+        // Shadow
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.fillRect(p.x + 5, p.y + 5, p.w, p.h);
+
+        // Main Body
+        if (p.type === 'crate') {
+            ctx.fillStyle = "#f39c12";
+            ctx.fillRect(p.x, p.y, p.w, p.h);
+            // Detail Box
+            ctx.lineWidth = 2; ctx.strokeStyle = "#d35400";
+            ctx.strokeRect(p.x, p.y, p.w, p.h);
+            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x+p.w, p.y+p.h); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(p.x+p.w, p.y); ctx.lineTo(p.x, p.y+p.h); ctx.stroke();
+        } else {
+            // Ground / Float
+            ctx.fillStyle = "#34495e";
+            ctx.fillRect(p.x, p.y, p.w, p.h);
+            // Rumput Neon di atas
+            ctx.fillStyle = "#2ecc71";
+            ctx.fillRect(p.x, p.y, p.w, 6);
+        }
+    });
+
+    // Draw Particles
+    particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+        ctx.fill();
+    });
+
+    // Draw Enemies
+    enemies.forEach(e => {
+        // Badan Kotak Merah
+        ctx.fillStyle = "#e74c3c";
+        ctx.fillRect(e.x, e.y, e.w, e.h);
+        
+        // Mata Jahat
+        ctx.fillStyle = "white";
+        ctx.beginPath(); ctx.moveTo(e.x+5, e.y+10); ctx.lineTo(e.x+15, e.y+20); ctx.lineTo(e.x+15, e.y+5); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(e.x+e.w-5, e.y+10); ctx.lineTo(e.x+e.w-15, e.y+20); ctx.lineTo(e.x+e.w-15, e.y+5); ctx.fill();
+    });
+
+    // Draw Bullets (Glowing)
+    bullets.forEach(b => {
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = "#f1c40f";
+        ctx.fillStyle = "#fff";
+        ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI*2); ctx.fill();
+        ctx.shadowBlur = 0;
+    });
+
+    // Draw Player (Modern Stickman)
+    if (gameState !== "GAMEOVER") {
+        let px = player.x + player.w/2;
+        let py = player.y + player.h;
+
+        ctx.strokeStyle = player.color;
+        ctx.lineWidth = 4;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        // Kaki (Animasi Lari)
+        let run = (Math.abs(player.vx) > 0.5 && player.grounded) ? Math.sin(frameCount * 0.3) * 10 : 0;
+        
+        ctx.beginPath(); ctx.moveTo(px, py-20); ctx.lineTo(px-10+run, py); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px, py-20); ctx.lineTo(px+10-run, py); ctx.stroke();
+
+        // Badan
+        ctx.beginPath(); ctx.moveTo(px, py-20); ctx.lineTo(px, py-40); ctx.stroke();
+
+        // Kepala
+        ctx.fillStyle = "white";
+        ctx.beginPath(); ctx.arc(px, py-48, 10, 0, Math.PI*2); ctx.fill();
+        
+        // Headband (Ikat kepala merah)
+        ctx.strokeStyle = "#e74c3c"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(px-10, py-52); ctx.lineTo(px+10, py-52); ctx.stroke();
+        // Tali ikat kepala (gerak kalau lari)
+        ctx.beginPath(); ctx.moveTo(px-10, py-52); ctx.lineTo(px-18 - Math.abs(run), py-50 + run); ctx.stroke();
+
+        // Tangan & Senjata
+        ctx.strokeStyle = "white"; ctx.lineWidth = 4;
+        let aimX = player.facingRight ? 20 : -20;
+        
+        ctx.beginPath(); ctx.moveTo(px, py-35); ctx.lineTo(px+aimX, py-30); ctx.stroke();
+
+        // Gambar Pistol
+        ctx.fillStyle = "#95a5a6";
+        ctx.fillRect(px + aimX - (player.facingRight?0:10), py-35, 12, 6);
+    }
+
+    ctx.restore();
+    requestAnimationFrame(loop);
+}
+
+function loop() {
+    update();
+    draw();
+}
+
+// Start
+initLevel();
+loop();
+
+</script>
+</body>
+</html>

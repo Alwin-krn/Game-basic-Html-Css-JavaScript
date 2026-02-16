@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern Block Blast</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --accent-color: #38bdf8;
+            --text-color: #f8fafc;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+            background: var(--card-bg);
+            padding: 15px 40px;
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+        }
+
+        h1 { margin: 0; font-size: 1.5rem; letter-spacing: 2px; color: var(--accent-color); }
+        
+        .score-container {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-top: 5px;
+        }
+
+        canvas {
+            background: #1e293b;
+            border-radius: 12px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            cursor: grab;
+            touch-action: none;
+            border: 2px solid #334155;
+        }
+
+        canvas:active { cursor: grabbing; }
+
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(15, 23, 42, 0.95);
+            padding: 30px;
+            border-radius: 20px;
+            text-align: center;
+            display: none;
+            border: 2px solid var(--accent-color);
+            z-index: 10;
+        }
+
+        button {
+            background: var(--accent-color);
+            border: none;
+            padding: 10px 25px;
+            color: white;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: transform 0.2s;
+        }
+
+        button:hover { transform: scale(1.05); }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>BLOCK BLAST</h1>
+        <div class="score-container" id="score">0</div>
+    </div>
+
+    <canvas id="gameCanvas" width="400" height="620"></canvas>
+
+    <div id="game-over">
+        <h2>GAME OVER!</h2>
+        <p>Skor Akhir: <span id="final-score">0</span></p>
+        <button onclick="resetGame()">Main Lagi</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const gameOverEl = document.getElementById('game-over');
+
+        // Config
+        const GRID_SIZE = 8;
+        const CELL_SIZE = 44;
+        const PADDING = 4;
+        const BOARD_OFFSET_X = (canvas.width - (GRID_SIZE * CELL_SIZE)) / 2;
+        const BOARD_OFFSET_Y = 40;
+
+        let score = 0;
+        let grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(null));
+        let pieces = [];
+        let draggingPiece = null;
+        let dragOffset = { x: 0, y: 0 };
+
+        const COLORS = {
+            blue: '#38bdf8',
+            purple: '#818cf8',
+            pink: '#f472b6',
+            orange: '#fb923c',
+            green: '#4ade80',
+            yellow: '#facc15'
+        };
+
+        const SHAPES = [
+            { shape: [[1,1], [1,1]], color: COLORS.blue },
+            { shape: [[1,1,1]], color: COLORS.orange },
+            { shape: [[1], [1], [1]], color: COLORS.orange },
+            { shape: [[1,1,1,1]], color: COLORS.purple },
+            { shape: [[1,1], [1,0]], color: COLORS.pink },
+            { shape: [[1,1,1], [0,1,0]], color: COLORS.green },
+            { shape: [[1]], color: COLORS.yellow }
+        ];
+
+        function init() {
+            score = 0;
+            grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(null));
+            spawnPieces();
+            animate();
+        }
+
+        function spawnPieces() {
+            pieces = [];
+            for (let i = 0; i < 3; i++) {
+                const type = SHAPES[Math.floor(Math.random() * SHAPES.length)];
+                pieces.push({
+                    ...type,
+                    x: 40 + (i * 125),
+                    y: 480,
+                    origX: 40 + (i * 125),
+                    origY: 480,
+                    scale: 0.7 // Balok di bawah lebih kecil
+                });
+            }
+            checkGameOver();
+        }
+
+        function drawGrid() {
+            for (let r = 0; r < GRID_SIZE; r++) {
+                for (let c = 0; c < GRID_SIZE; c++) {
+                    ctx.fillStyle = grid[r][c] || '#2d3748';
+                    ctx.beginPath();
+                    ctx.roundRect(
+                        BOARD_OFFSET_X + c * CELL_SIZE + PADDING,
+                        BOARD_OFFSET_Y + r * CELL_SIZE + PADDING,
+                        CELL_SIZE - PADDING * 2,
+                        CELL_SIZE - PADDING * 2,
+                        6
+                    );
+                    ctx.fill();
+                }
+            }
+        }
+
+        function drawPieces() {
+            pieces.forEach(p => {
+                ctx.globalAlpha = draggingPiece === p ? 0.8 : 1;
+                const size = draggingPiece === p ? CELL_SIZE : CELL_SIZE * p.scale;
+                
+                p.shape.forEach((row, ri) => {
+                    row.forEach((cell, ci) => {
+                        if (cell) {
+                            ctx.shadowBlur = 10;
+                            ctx.shadowColor = p.color;
+                            ctx.fillStyle = p.color;
+                            ctx.beginPath();
+                            ctx.roundRect(
+                                p.x + ci * size,
+                                p.y + ri * size,
+                                size - PADDING,
+                                size - PADDING,
+                                4
+                            );
+                            ctx.fill();
+                            ctx.shadowBlur = 0;
+                        }
+                    });
+                });
+            });
+            ctx.globalAlpha = 1;
+        }
+
+        function checkLines() {
+            let fullRows = [];
+            let fullCols = [];
+
+            for (let i = 0; i < GRID_SIZE; i++) {
+                if (grid[i].every(c => c !== null)) fullRows.push(i);
+                if (grid.map(row => row[i]).every(c => c !== null)) fullCols.push(i);
+            }
+
+            fullRows.forEach(r => grid[r] = Array(GRID_SIZE).fill(null));
+            fullCols.forEach(c => grid.forEach(row => row[c] = null));
+
+            if (fullRows.length > 0 || fullCols.length > 0) {
+                const combo = fullRows.length + fullCols.length;
+                score += combo * 150;
+                scoreElement.innerText = score;
+            }
+        }
+
+        function checkGameOver() {
+            const canPlaceAny = pieces.some(p => {
+                for (let r = 0; r <= GRID_SIZE - p.shape.length; r++) {
+                    for (let c = 0; c <= GRID_SIZE - p.shape[0].length; c++) {
+                        if (canPlace(p.shape, c, r)) return true;
+                    }
+                }
+                return false;
+            });
+
+            if (!canPlaceAny && pieces.length > 0) {
+                gameOverEl.style.display = 'block';
+                document.getElementById('final-score').innerText = score;
+            }
+        }
+
+        function canPlace(shape, col, row) {
+            for (let r = 0; r < shape.length; r++) {
+                for (let c = 0; c < shape[r].length; c++) {
+                    if (shape[r][c]) {
+                        if (row + r >= GRID_SIZE || col + c >= GRID_SIZE || grid[row + r][col + c]) return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawGrid();
+            drawPieces();
+            requestAnimationFrame(animate);
+        }
+
+        // Input Handlers
+        function handleStart(e) {
+            const pos = getPos(e);
+            pieces.forEach(p => {
+                const size = CELL_SIZE * p.scale;
+                if (pos.x > p.x && pos.x < p.x + 100 && pos.y > p.y && pos.y < p.y + 100) {
+                    draggingPiece = p;
+                    dragOffset = { x: pos.x - p.x, y: pos.y - p.y };
+                }
+            });
+        }
+
+        function handleMove(e) {
+            if (draggingPiece) {
+                const pos = getPos(e);
+                draggingPiece.x = pos.x - dragOffset.x;
+                draggingPiece.y = pos.y - dragOffset.y;
+            }
+        }
+
+        function handleEnd() {
+            if (!draggingPiece) return;
+
+            const gridX = Math.round((draggingPiece.x - BOARD_OFFSET_X) / CELL_SIZE);
+            const gridY = Math.round((draggingPiece.y - BOARD_OFFSET_Y) / CELL_SIZE);
+
+            if (canPlace(draggingPiece.shape, gridX, gridY)) {
+                draggingPiece.shape.forEach((row, r) => {
+                    row.forEach((cell, c) => {
+                        if (cell) grid[gridY + r][gridX + c] = draggingPiece.color;
+                    });
+                });
+                score += 20;
+                scoreElement.innerText = score;
+                pieces = pieces.filter(p => p !== draggingPiece);
+                checkLines();
+                if (pieces.length === 0) spawnPieces();
+            } else {
+                draggingPiece.x = draggingPiece.origX;
+                draggingPiece.y = draggingPiece.origY;
+            }
+            draggingPiece = null;
+            checkGameOver();
+        }
+
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return { x: clientX - rect.left, y: clientY - rect.top };
+        }
+
+        function resetGame() {
+            gameOverEl.style.display = 'none';
+            init();
+        }
+
+        canvas.addEventListener('mousedown', handleStart);
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleEnd);
+        canvas.addEventListener('touchstart', handleStart);
+        window.addEventListener('touchmove', handleMove);
+        window.addEventListener('touchend', handleEnd);
+
+        init();
+    </script>
+</body>
+</html>
